@@ -11,53 +11,22 @@ import (
 )
 
 var pacSaveBuf bytes.Buffer
-var dataPosOfs uint64
+var dataPosOfs uint32
 var tablePosOfs uint64
 
-var dataPos uint64
+var dataPos uint32
 
 var entries *list.List
 
 // NOTE: This is not the exact structure of a PAC file on disk.
 // Please refer to SPEC.md for more information.
-/*
-All multi-byte fields are stored in little-endian format, incl. the magic.
-
-| Field               | Type                                 | Description                                                                      | Version Added |
-|---------------------|--------------------------------------|----------------------------------------------------------------------------------|---------------|
-| **Magic**           | `char[4]`                            | "PACC" magic header thingy.                                                      | 0             |
-| **Format Version**  | `uint32`                             | PAC format version. Currently set to 0.                                          | 0             |
-| **Version**         | `uint32`                             | Version set by the [Saver](#Definitions).                                        | 0             |
-| **Packaged For**    | `byte[]`                             | [Length-prefixed array](#Type-Definitions) of bytes indicating the intended use. | 0             |
-| **Flags**           | `uint32`                             | See [PAC Flags](#PAC-Flags).                                                     | 0             |
-| **Reserved Fields** | `uint32[2]`                          | Reserved for future use.                                                         | 0             |
-| **File Data Pos.**  | `uint64`                             | Position where the File Data starts.                                             | 0             |
-| **File Table Pos.** | `uint64`                             | Position where the File Table starts.                                            | 0             |
-| **Reserved Fields** | `uint32[2]`                          | Reserved for future use.                                                         | 0             |
-| **File Data**       | `byte[]`                             | The actual file data.                                                            | 0             |
-| **File Table**      | [`FileTable`](#File-Table-Structure) | Metadata about each file contained in the PAC.                                   | 0             |
-## File Table Structure
-| Field           | Type                          | Description                                            | Version Added |
-|-----------------|-------------------------------|--------------------------------------------------------|---------------|
-| **Entry Count** | `uint64`                      | Number of entries in the File Table.                   | 0             |
-| **Entries**     | [`Entry[]`](#Entry-Structure) | Array of entries, each representing a file's metadata. | 0             |
-## Entry Structure
-| Field        | Type                        | Description                                                                                                                          |
-|--------------|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------|
-| **Path**     | [String](#Type-Definitions) | [String](#Type-Definitions) representing the file path (e.g., `/dir/file.txt`).<br>**All paths must start with a `/`.**              |
-| **Flags**    | `uint32`                    | See [Entry Flags](#Entry-Flags).                                                                                                     |
-| **Type**     | `uint32`                    | Type identifier set by the [Saver](#Definitions) to help the [Loader](#Definitions) identify the file type (e.g., 1 = TXT, 2 = PNG). |
-| **MD5 Hash** | `byte[16]`                  | MD5 hash of the file data for integrity verification.                                                                                |
-| **Offset**   | `uint64`                    | Offset from the start of the File Data where this file's data begins.                                                                |
-| **Length**   | `uint64`                    | Length of the file data in bytes.                                                                                                    |
-*/
 type PAC struct {
 	Format      uint32 // Format version
 	Version     uint32 // Version number, set by saver.
 	PackagedFor []byte // Intended target. (e.g. "MyModLoader" or whatever you want)
 	Flags       uint32 // Bit flags.
 
-	FileDataPos  uint64 // File data position.
+	FileDataPos  uint32 // File data position.
 	FileTablePos uint64 // File table position.
 
 	FileData  []byte    // File data.
@@ -108,8 +77,8 @@ func (pac *PAC) GetReady() error {
 
 	// Placeholder for file data position
 	// dataPosOfs = where we are now
-	dataPosOfs = uint64(pacSaveBuf.Len())
-	err = binary.Write(&pacSaveBuf, binary.LittleEndian, uint64(0))
+	dataPosOfs = uint32(pacSaveBuf.Len())
+	err = binary.Write(&pacSaveBuf, binary.LittleEndian, uint32(0))
 	// Placeholder for file table position
 	// tablePosOfs = where we are now
 	tablePosOfs = uint64(pacSaveBuf.Len())
@@ -119,9 +88,9 @@ func (pac *PAC) GetReady() error {
 	err = binary.Write(&pacSaveBuf, binary.LittleEndian, reserved)
 
 	// Now, the file data will be written after this. Get current position.
-	dataPos = uint64(pacSaveBuf.Len())
+	dataPos = uint32(pacSaveBuf.Len())
 	// overwrite the file data pos placeholder with the actual position
-	binary.LittleEndian.PutUint64(pacSaveBuf.Bytes()[dataPosOfs:], dataPos)
+	binary.LittleEndian.PutUint32(pacSaveBuf.Bytes()[dataPosOfs:], dataPos)
 
 	if err != nil {
 		return err
@@ -290,7 +259,7 @@ func LoadPAC(data []byte) (*PAC, error) {
 		return nil, err
 	}
 	// read file data
-	pac.FileData = make([]byte, pac.FileTablePos-pac.FileDataPos)
+	pac.FileData = make([]byte, pac.FileTablePos-uint64(pac.FileDataPos))
 	if _, err := io.ReadFull(reader, pac.FileData); err != nil {
 		return nil, err
 	}
@@ -309,38 +278,39 @@ func LoadPAC(data []byte) (*PAC, error) {
 	// read entries
 	pac.FileTable.Entries = make([]Entry, entryCount)
 	for i := uint64(0); i < entryCount; i++ {
+		entry := &pac.FileTable.Entries[i]
 		// read path (length-prefixed byte array)
 		pathBytes, err := readArray(reader)
 		if err != nil {
 			return nil, err
 		}
-		pac.FileTable.Entries[i].Path = *(*string)(unsafe.Pointer(&pathBytes))
+		entry.Path = (string)(pathBytes)
 
 		// read flags
-		if err := binary.Read(reader, binary.LittleEndian, &pac.FileTable.Entries[i].Flags); err != nil {
+		if err := binary.Read(reader, binary.LittleEndian, &entry.Flags); err != nil {
 			return nil, err
 		}
 		// read type
-		if err := binary.Read(reader, binary.LittleEndian, &pac.FileTable.Entries[i].Type); err != nil {
+		if err := binary.Read(reader, binary.LittleEndian, &entry.Type); err != nil {
 			return nil, err
 		}
 		// read MD5
-		if _, err := reader.Read(pac.FileTable.Entries[i].MD5[:]); err != nil {
+		if _, err := reader.Read(entry.MD5[:]); err != nil {
 			return nil, err
 		}
 		// read offset
-		if err := binary.Read(reader, binary.LittleEndian, &pac.FileTable.Entries[i].Offset); err != nil {
+		if err := binary.Read(reader, binary.LittleEndian, &entry.Offset); err != nil {
 			return nil, err
 		}
 		// read length
-		if err := binary.Read(reader, binary.LittleEndian, &pac.FileTable.Entries[i].Length); err != nil {
+		if err := binary.Read(reader, binary.LittleEndian, &entry.Length); err != nil {
 			return nil, err
 		}
 
 		// validate md5
-		actualMD5 := md5.Sum(pac.GetEntryData(pac.FileTable.Entries[i]))
-		if actualMD5 != pac.FileTable.Entries[i].MD5 {
-			return nil, fmt.Errorf("md5 mismatch for entry %s (got %x, expected %x)", pac.FileTable.Entries[i].Path, pac.FileTable.Entries[i].MD5, actualMD5)
+		actualMD5 := md5.Sum(pac.GetEntryData(*entry))
+		if actualMD5 != entry.MD5 {
+			return nil, fmt.Errorf("md5 mismatch for entry %s (got %x, expected %x)", entry.Path, entry.MD5, actualMD5)
 		}
 	}
 

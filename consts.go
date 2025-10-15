@@ -1,6 +1,6 @@
 package main
 
 const (
-	MAGIC       = "PACC" // Magic (4 bytes)
+	MAGIC       = "PACC"
 	FMT_VERSION = 0
 )
